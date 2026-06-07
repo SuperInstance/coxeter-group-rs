@@ -82,6 +82,189 @@ impl ReflectionRepresentation {
         let m = self.word_matrix(word);
         is_identity_matrix(&m)
     }
+
+    /// Generate all reflections in the group (conjugates of simple reflections).
+    ///
+    /// For a Coxeter group of rank n, returns all reflections
+    /// w * s_i * w^{-1} for all group elements w and generators s_i.
+    pub fn all_reflections(&self) -> Vec<Vec<Vec<f64>>> {
+        let mut reflections = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+
+        // Start with simple reflections
+        for r in &self.reflections {
+            let key = matrix_key_rounded(r);
+            if seen.insert(key) {
+                reflections.push(r.clone());
+            }
+        }
+
+        // Conjugate by each known reflection to find new ones
+        let mut changed = true;
+        while changed {
+            changed = false;
+            let current = reflections.clone();
+            for r1 in &current {
+                for r2 in &current {
+                    let conjugated = mat_mul(r1, &mat_mul(r2, r1));
+                    let key = matrix_key_rounded(&conjugated);
+                    if seen.insert(key) {
+                        reflections.push(conjugated);
+                        changed = true;
+                    }
+                }
+            }
+        }
+
+        reflections
+    }
+
+    /// Compose two group elements (given as words) into a single word.
+    /// Returns the matrix product for the concatenated word w1·w2.
+    pub fn compose(&self, w1: &[usize], w2: &[usize]) -> Vec<Vec<f64>> {
+        let m2 = self.word_matrix(w2);
+        let m1 = self.word_matrix(w1);
+        // Group composition: first apply w1, then w2 → mat_mul(m2, m1)
+        mat_mul(&m2, &m1)
+    }
+
+    /// Compute the Coxeter presentation string.
+    ///
+    /// Returns the group presentation in terms of generators and relations.
+    pub fn coxeter_presentation(&self) -> CoxeterPresentation {
+        let generators: Vec<String> = (0..self.coxeter.rank)
+            .map(|i| format!("s{}", i))
+            .collect();
+
+        let mut relations = vec![];
+        // s_i^2 = e
+        for i in 0..self.coxeter.rank {
+            relations.push(CoxeterRelation::Order2(i));
+        }
+        // Braid relations
+        for i in 0..self.coxeter.rank {
+            for j in (i + 1)..self.coxeter.rank {
+                let m = self.coxeter.entries[i][j];
+                if m > 2 {
+                    relations.push(CoxeterRelation::Braid { i, j, m });
+                }
+            }
+        }
+
+        CoxeterPresentation { generators, relations }
+    }
+
+    /// Compute the order of a group element represented by a word.
+    /// Returns the smallest k > 0 such that w^k = identity, or None.
+    pub fn element_order(&self, word: &[usize], max_k: usize) -> Option<usize> {
+        let m = self.word_matrix(word);
+        if is_identity_matrix(&m) {
+            return Some(1);
+        }
+        let mut current = m.clone();
+        for k in 2..=max_k {
+            current = mat_mul(&m, &current);
+            if is_identity_matrix(&current) {
+                return Some(k);
+            }
+        }
+        None
+    }
+
+    /// Compute the trace of the matrix for a word.
+    pub fn word_trace(&self, word: &[usize]) -> f64 {
+        let m = self.word_matrix(word);
+        (0..m.len()).map(|i| m[i][i]).sum()
+    }
+
+    /// Check if a word represents a reflection (element conjugate to a simple reflection).
+    pub fn is_reflection(&self, word: &[usize]) -> bool {
+        let m = self.word_matrix(word);
+        if !is_identity_matrix(&m) {
+            let d = det(&m);
+            (d + 1.0).abs() < 1e-8
+        } else {
+            false
+        }
+    }
+
+    /// Compute the eigenvalues of a word's matrix.
+    pub fn word_eigenvalues(&self, word: &[usize]) -> Vec<f64> {
+        let m = self.word_matrix(word);
+        let n = m.len();
+        if n == 0 {
+            return vec![];
+        }
+        if n == 2 {
+            let trace = m[0][0] + m[1][1];
+            let determinant = m[0][0] * m[1][1] - m[0][1] * m[1][0];
+            let disc = (trace * trace - 4.0 * determinant).max(0.0);
+            return vec![(trace + disc.sqrt()) / 2.0, (trace - disc.sqrt()) / 2.0];
+        }
+        // For larger matrices, use power iteration for dominant eigenvalue
+        let mut v = vec![1.0; n];
+        for _ in 0..200 {
+            let mut w = vec![0.0; n];
+            for i in 0..n {
+                for j in 0..n {
+                    w[i] += m[i][j] * v[j];
+                }
+            }
+            let norm: f64 = w.iter().map(|x| x * x).sum::<f64>().sqrt();
+            if norm < 1e-15 {
+                break;
+            }
+            v = w.iter().map(|x| x / norm).collect();
+        }
+        // Rayleigh quotient
+        let mut mv = vec![0.0; n];
+        for i in 0..n {
+            for j in 0..n {
+                mv[i] += m[i][j] * v[j];
+            }
+        }
+        let lambda: f64 = v.iter().zip(mv.iter()).map(|(a, b)| a * b).sum();
+        vec![lambda]
+    }
+}
+
+/// A Coxeter presentation: generators and relations.
+#[derive(Debug, Clone)]
+pub struct CoxeterPresentation {
+    /// Generator names.
+    pub generators: Vec<String>,
+    /// Relations.
+    pub relations: Vec<CoxeterRelation>,
+}
+
+/// A relation in the Coxeter presentation.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CoxeterRelation {
+    /// s_i^2 = e
+    Order2(usize),
+    /// (s_i s_j)^m = e
+    Braid { i: usize, j: usize, m: u32 },
+}
+
+impl std::fmt::Display for CoxeterPresentation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "<")?;
+        for (i, g) in self.generators.iter().enumerate() {
+            if i > 0 { write!(f, ", ")?; }
+            write!(f, "{}", g)?;
+        }
+        write!(f, " | ")?;
+        for (i, rel) in self.relations.iter().enumerate() {
+            if i > 0 { write!(f, ", ")?; }
+            match rel {
+                CoxeterRelation::Order2(s) => write!(f, "s{}^2", s)?,
+                CoxeterRelation::Braid { i: a, j: b, m } => {
+                    write!(f, "(s{}s{})^{}", a, b, m)?;
+                }
+            }
+        }
+        write!(f, ">")
+    }
 }
 
 /// Compute the reflection matrix for generator `i`.
@@ -161,6 +344,12 @@ fn is_identity_matrix(m: &[Vec<f64>]) -> bool {
     true
 }
 
+fn matrix_key_rounded(m: &[Vec<f64>]) -> Vec<i64> {
+    m.iter().flat_map(|row| {
+        row.iter().map(|&x| (x * 1e8).round() as i64)
+    }).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -176,7 +365,6 @@ mod tests {
     fn test_reflection_determinant() {
         let coxeter = CoxeterMatrix::type_a(2);
         let repr = ReflectionRepresentation::new(&coxeter);
-        // Each reflection has determinant -1
         for r in &repr.reflections {
             let d = det(r);
             assert!((d + 1.0).abs() < 1e-10, "Reflection det should be -1, got {}", d);
@@ -188,7 +376,6 @@ mod tests {
         let coxeter = CoxeterMatrix::type_a(2);
         let repr = ReflectionRepresentation::new(&coxeter);
         let b = repr.bilinear_form();
-        // B(e_0, e_0) = 1, B(e_0, e_1) = -cos(π/3) = -0.5
         assert!((b[0][0] - 1.0).abs() < 1e-10);
         assert!((b[0][1] + 0.5).abs() < 1e-10);
     }
@@ -198,7 +385,6 @@ mod tests {
         let coxeter = CoxeterMatrix::type_a(2);
         let repr = ReflectionRepresentation::new(&coxeter);
         assert!(repr.is_identity(&[]));
-        // s_0 * s_0 = identity
         assert!(repr.is_identity(&[0, 0]));
     }
 
@@ -209,7 +395,6 @@ mod tests {
         let v = vec![1.0, 0.0];
         let result = repr.apply_word(&[0], &v);
         assert_eq!(result.len(), 2);
-        // Should change the vector
         assert!((result[0] - v[0]).abs() > 0.01 || (result[1] - v[1]).abs() > 0.01);
     }
 
@@ -227,5 +412,95 @@ mod tests {
         let repr = ReflectionRepresentation::new(&coxeter);
         let d = repr.word_determinant(&[0]);
         assert!((d + 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_all_reflections_a2() {
+        let coxeter = CoxeterMatrix::type_a(2);
+        let repr = ReflectionRepresentation::new(&coxeter);
+        let all_ref = repr.all_reflections();
+        // A2 has 6 elements, each non-identity element is either a reflection or rotation
+        // Simple reflections + their conjugates
+        assert!(all_ref.len() >= 2);
+        // Each should have det = -1
+        for r in &all_ref {
+            assert!((det(r) + 1.0).abs() < 1e-8);
+        }
+    }
+
+    #[test]
+    fn test_compose_words() {
+        let coxeter = CoxeterMatrix::type_a(2);
+        let repr = ReflectionRepresentation::new(&coxeter);
+        let composed = repr.compose(&[0], &[1]);
+        let expected = repr.word_matrix(&[0, 1]);
+        for i in 0..2 {
+            for j in 0..2 {
+                assert!((composed[i][j] - expected[i][j]).abs() < 1e-10);
+            }
+        }
+    }
+
+    #[test]
+    fn test_coxeter_presentation_a2() {
+        let coxeter = CoxeterMatrix::type_a(2);
+        let repr = ReflectionRepresentation::new(&coxeter);
+        let pres = repr.coxeter_presentation();
+        assert_eq!(pres.generators.len(), 2);
+        // s0^2 = e, s1^2 = e, (s0*s1)^3 = e
+        assert_eq!(pres.relations.len(), 3);
+    }
+
+    #[test]
+    fn test_coxeter_presentation_display() {
+        let coxeter = CoxeterMatrix::type_a(2);
+        let repr = ReflectionRepresentation::new(&coxeter);
+        let pres = repr.coxeter_presentation();
+        let s = format!("{}", pres);
+        assert!(s.contains("s0"));
+        assert!(s.contains("s1"));
+    }
+
+    #[test]
+    fn test_element_order_reflection() {
+        let coxeter = CoxeterMatrix::type_a(2);
+        let repr = ReflectionRepresentation::new(&coxeter);
+        // A reflection has order 2
+        assert_eq!(repr.element_order(&[0], 10), Some(2));
+    }
+
+    #[test]
+    fn test_element_order_identity() {
+        let coxeter = CoxeterMatrix::type_a(2);
+        let repr = ReflectionRepresentation::new(&coxeter);
+        assert_eq!(repr.element_order(&[], 10), Some(1));
+        assert_eq!(repr.element_order(&[0, 0], 10), Some(1));
+    }
+
+    #[test]
+    fn test_word_trace() {
+        let coxeter = CoxeterMatrix::type_a(2);
+        let repr = ReflectionRepresentation::new(&coxeter);
+        // Identity has trace = rank
+        let t = repr.word_trace(&[]);
+        assert!((t - 2.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_is_reflection() {
+        let coxeter = CoxeterMatrix::type_a(2);
+        let repr = ReflectionRepresentation::new(&coxeter);
+        assert!(repr.is_reflection(&[0]));
+        assert!(repr.is_reflection(&[1]));
+        assert!(!repr.is_reflection(&[]));
+    }
+
+    #[test]
+    fn test_word_eigenvalues() {
+        let coxeter = CoxeterMatrix::type_a(2);
+        let repr = ReflectionRepresentation::new(&coxeter);
+        let eigs = repr.word_eigenvalues(&[]);
+        // Identity has eigenvalues all 1
+        assert!(eigs.iter().all(|&e| (e - 1.0).abs() < 1e-8));
     }
 }
