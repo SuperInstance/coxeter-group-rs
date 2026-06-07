@@ -1,0 +1,13 @@
+[package]
+name = "coxeter-group-rs"
+version = "0.1.0"
+edition = "2021"
+description = "Coxeter group computations: Coxeter matrix, reflection representation, word reduction, and Bruhat order"
+license = "MIT OR Apache-2.0"
+keywords = ["coxeter", "group-theory", "reflection", "bruhat", "combinatorics"]
+categories = ["algorithms", "mathematics"]
+repository = "https://github.com/SuperInstance/coxeter-group-rs"
+authors = ["SuperInstance"]
+readme = "README.md"
+
+[dependencies]
